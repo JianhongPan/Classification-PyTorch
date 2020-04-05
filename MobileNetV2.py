@@ -1,5 +1,5 @@
 from torch import nn
-
+from torch.nn import ReLU6 as RE
 def _make_divisible(v, divisor, min_value=None):
     """
     This function is taken from the original tf repo.
@@ -20,34 +20,28 @@ def _make_divisible(v, divisor, min_value=None):
     return new_v
 
 class ConvBN(nn.Sequential):
-    def __init__(self, in_planes, out_planes, kernel_size=3, stride=1, groups=1):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, groups=1, activation=None):
         padding = (kernel_size - 1) // 2
         super(ConvBN, self).__init__(
-            nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, groups=groups, bias=False),
-            nn.BatchNorm2d(out_planes)
-        )
-
-class ConvBNR(nn.Sequential):
-    def __init__(self, in_planes, out_planes, kernel_size, stride=1, groups=1):
-        padding = (kernel_size - 1) // 2
-        super(ConvBNR, self).__init__(
-            ConvBN(in_planes, out_planes, kernel_size, stride, groups),
-            nn.ReLU6(inplace=True)
+            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, groups=groups, bias=False),
+            nn.BatchNorm2d(out_channels),
+            activation if activation is not None else nn.Sequential()
         )
 
 class InvertedResidual(nn.Module):
     def __init__(self, in_channels, out_channels, stride, expand_ratio):
         super(InvertedResidual, self).__init__()
-        self.stride = stride
-        assert stride in [1, 2]
-
         mid_channels = in_channels * expand_ratio
-        self.is_shortcut = self.stride == 1 and in_channels == out_channels
+        self.is_shortcut = stride == 1 and in_channels == out_channels
 
-        layers = [
-            ConvBNR(in_channels, mid_channels, kernel_size=1),
+        layers = []
+        if expand_ratio != 1:
+            layers += [
+                ConvBN(in_channels, mid_channels, kernel_size=1, activation=RE(inplace=True))
+            ]
+        layers += [
             #dw
-            ConvBNR(mid_channels, mid_channels, kernel_size=3, stride=stride, groups=mid_channels),
+            ConvBN(mid_channels, mid_channels, kernel_size=3, stride=stride, groups=mid_channels, activation=RE(inplace=True)),
             ConvBN(mid_channels, out_channels, kernel_size=1)
         ]
         self.conv = nn.Sequential(*layers)
@@ -84,7 +78,7 @@ class MobileNetV2(nn.Module):
 
         # building first layer
         in_channels = _make_divisible(in_channels * width_mult, 8)
-        features = [ConvBNR(3, in_channels, stride=2)]
+        features = [ConvBN(3, in_channels, kernel_size=3, stride=2, activation=RE(inplace=True))]
 
         # building inverted residual blocks
         for t, c, n, s in inverted_residual_setting:
@@ -97,7 +91,7 @@ class MobileNetV2(nn.Module):
 
         # building last several layers
         out_channels = _make_divisible(last_channel * max(1.0, width_mult), 8)
-        features.append(ConvBNR(in_channels, out_channels, kernel_size=1))
+        features.append(ConvBN(in_channels, out_channels, kernel_size=1, activation=RE(inplace=True)))
         in_channels = out_channels
 
         # make it nn.Sequential
@@ -110,6 +104,15 @@ class MobileNetV2(nn.Module):
         )
 
         # weight initialization
+        self.initialize_weights()
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.mean([2, 3])
+        x = self.classifier(x)
+        return x
+
+    def initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out')
@@ -121,9 +124,3 @@ class MobileNetV2(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.mean([2, 3])
-        x = self.classifier(x)
-        return x
