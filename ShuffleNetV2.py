@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class ShuffleV2Block(nn.Module):
-    def __init__(self, inp, oup, mid_channels, *, ksize, stride):
+    def __init__(self, inp, oup, mid_channels, *, ksize, stride, norm_layer):
         super(ShuffleV2Block, self).__init__()
         self.stride = stride
         assert stride in [1, 2]
@@ -18,14 +18,14 @@ class ShuffleV2Block(nn.Module):
         branch_main = [
             # pw
             nn.Conv2d(inp, mid_channels, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(mid_channels),
+            norm_layer(mid_channels),
             nn.ReLU(inplace=True),
             # dw
             nn.Conv2d(mid_channels, mid_channels, ksize, stride, pad, groups=mid_channels, bias=False),
-            nn.BatchNorm2d(mid_channels),
+            norm_layer(mid_channels),
             # pw-linear
             nn.Conv2d(mid_channels, outputs, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(outputs),
+            norm_layer(outputs),
             nn.ReLU(inplace=True),
         ]
         self.branch_main = nn.Sequential(*branch_main)
@@ -34,10 +34,10 @@ class ShuffleV2Block(nn.Module):
             branch_proj = [
                 # dw
                 nn.Conv2d(inp, inp, ksize, stride, pad, groups=inp, bias=False),
-                nn.BatchNorm2d(inp),
+                norm_layer(inp),
                 # pw-linear
                 nn.Conv2d(inp, inp, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(inp),
+                norm_layer(inp),
                 nn.ReLU(inplace=True),
             ]
             self.branch_proj = nn.Sequential(*branch_proj)
@@ -61,7 +61,7 @@ class ShuffleV2Block(nn.Module):
         return x[0], x[1]
 
 class ShuffleNetV2(nn.Module):
-    def __init__(self, model_size='0.5x', input_size=224, num_classes = 1000):
+    def __init__(self, model_size='0.5x', input_size=224, num_classes = 1000, norm_layer=None):
         super(ShuffleNetV2, self).__init__()
 
         self.stage_repeats = [4, 8, 4]
@@ -76,12 +76,15 @@ class ShuffleNetV2(nn.Module):
             self.stage_out_channels = [-1, 24, 244, 488, 976, 2048]
         else:
             raise NotImplementedError
+        
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
 
         # building first layer
         input_channel = self.stage_out_channels[1]
         self.first_conv = nn.Sequential(
             nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(input_channel),
+            norm_layer(input_channel),
             nn.ReLU(inplace=True),
         )
 
@@ -95,10 +98,10 @@ class ShuffleNetV2(nn.Module):
             for i in range(numrepeat):
                 if i == 0:
                     self.features.append(ShuffleV2Block(input_channel, output_channel, 
-                                                mid_channels=output_channel // 2, ksize=3, stride=2))
+                                                mid_channels=output_channel // 2, ksize=3, stride=2, norm_layer=norm_layer))
                 else:
                     self.features.append(ShuffleV2Block(input_channel // 2, output_channel, 
-                                                mid_channels=output_channel // 2, ksize=3, stride=1))
+                                                mid_channels=output_channel // 2, ksize=3, stride=1, norm_layer=norm_layer))
 
                 input_channel = output_channel
                 
@@ -106,7 +109,7 @@ class ShuffleNetV2(nn.Module):
 
         self.conv_last = nn.Sequential(
             nn.Conv2d(input_channel, self.stage_out_channels[-1], 1, 1, 0, bias=False),
-            nn.BatchNorm2d(self.stage_out_channels[-1]),
+            norm_layer(self.stage_out_channels[-1]),
             nn.ReLU(inplace=True)
         )
         self.globalpool = nn.AvgPool2d(7)
